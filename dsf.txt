@@ -1,0 +1,61 @@
+$services = Get-Service | Where-Object { $_.DisplayName -like "*Snowflake*" }
+foreach ($svc in $services) {
+    try {
+        Write-Host "Disabling service: $($svc.DisplayName)"
+        Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $svc.Name -StartupType Disabled
+    } catch {
+        Write-Host "Failed to disable service: $($svc.DisplayName)"
+    }
+}
+
+$hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+$entries = @(
+    "0.0.0.0    telemetry.snowflakecomputing.com",
+    "0.0.0.0    ocsp.snowflakecomputing.com",
+    "0.0.0.0    app.snowflake.com",
+    "0.0.0.0    *.snowflakecomputing.com"
+)
+$existing = Get-Content $hostsPath -ErrorAction SilentlyContinue
+foreach ($entry in $entries) {
+    if (-not ($existing -match [regex]::Escape($entry))) {
+        Add-Content -Path $hostsPath -Value $entry
+        Write-Host "Added hosts entry: $entry"
+    }
+}
+
+$rules = @(
+    "telemetry.snowflakecomputing.com",
+    "ocsp.snowflakecomputing.com",
+    "app.snowflake.com"
+)
+foreach ($domain in $rules) {
+    New-NetFirewallRule -DisplayName "Block Snowflake $domain" `
+                        -Direction Outbound `
+                        -Action Block `
+                        -RemoteFQDN $domain `
+                        -Profile Any `
+                        -Enabled True `
+                        -Description "Blocks outbound connection to Snowflake domain: $domain" `
+                        -ErrorAction SilentlyContinue
+    Write-Host "Firewall rule created for $domain"
+}
+
+$pathsToCheck = @(
+    "$env:ProgramFiles\Snowflake",
+    "$env:ProgramFiles(x86)\Snowflake",
+    "$env:AppData\Local\Snowflake"
+)
+foreach ($path in $pathsToCheck) {
+    if (Test-Path $path) {
+        Get-ChildItem -Path $path -Recurse -Include "telemetry.dll","*.log","*.json" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            try {
+                Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "Removed telemetry artifact: $($_.FullName)"
+            } catch {
+                Write-Host "Failed to remove: $($_.FullName)"
+            }
+        }
+    }
+}
